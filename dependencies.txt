@@ -1,0 +1,34 @@
+conda create -n PD1_Env python=3.10 -y
+conda activate PD1_Env
+
+# Core libraries
+
+pip install pyserial pandas numpy
+
+# Google Sheets API access
+
+pip install gspread google-auth google-auth-oauthlib google-auth-httplib2
+
+# For your GUI
+pip install customtkinter
+
+# For optional model deployment (if using joblib files)
+pip install scikit-learn joblib
+
+# If you plan to train or visualize more data later
+pip install matplotlib seaborn
+
+# Optional, for running Arduino CLI commands in Python
+sudo apt-get install -y arduino-cli  # (Linux/Raspberry Pi only)
+
+
+Project_Design_I_Files/
+│
+├── pYcODE/
+│   ├── datagatherer_po2_g.py
+│   ├── reverb_gui_ctk_pink.py
+│   ├── projectdesignt6-b8c2872f2067.json   ← Google service account key
+│   ├── reverb_zone_rf.joblib                ← (optional trained model)
+│   └── output_csvs/
+│
+└── ...
