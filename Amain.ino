@@ -4,11 +4,12 @@ int loudnessPin = A0;     // Loudness sensor input
 Ultrasonic ultrasonic(7); // Ultrasonic sensor (single-pin type)
 
 unsigned long lastMeasureTime = 0;
-const unsigned long interval = 2000;  // 3 seconds between measurements
+const unsigned long interval = 3000;  // 3 seconds between measurements
 
 void setup() {
   Serial.begin(9600);
   // Optional: label line for clarity or CSV header
+  Serial.println("Ultrasonic(cm),RT60(s)");
 }
 
 void loop() {
