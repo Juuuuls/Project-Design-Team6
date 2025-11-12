@@ -4,10 +4,10 @@ warnings.filterwarnings('ignore', category=UserWarning, module='sklearn')
 
 """
 Reverberation Taker (Angle IDs + Google Sheet + Prediction)
-Outputs EXACT columns: angle, rt60, utv, class
+Outputs EXACT columns: sensor, angle, rt60, utv, class
 
-Input line format from Arduino: "<ultrasonic_cm>,<rt60_seconds>"
-Angle IDs: 0..355 step 5 (configurable)
+Input line format from Arduino: "<sensor>,<ultrasonic_cm>,<rt60_seconds>"
+Angle IDs: 0..180 (Sensor 1) and 185..355 (Sensor 2) step 5
 Prediction: loads joblib model (if provided) and writes label to 'class'
 """
 
@@ -63,7 +63,7 @@ def resolve_service_json(path_from_args: str) -> str | None:
         return env
     return None
 
-def upload_to_existing_sheet(csv_path, sheet_url, service_json):
+def upload_to_existing_sheet(csv_path, sheet_url, service_json, sheet_index: int = 0):
     """Upload CSV data to an existing Google Sheet."""
     print("[INFO] Starting Google Sheets upload process...")
     
@@ -103,8 +103,19 @@ def upload_to_existing_sheet(csv_path, sheet_url, service_json):
     # Step 5: Open spreadsheet
     try:
         sh = client.open_by_key(sheet_id)
-        ws = sh.sheet1
-        print("[DEBUG] Spreadsheet opened successfully")
+        sheets = sh.worksheets()
+        # Ensure requested worksheet exists; create if needed
+        if sheet_index < 0:
+            sheet_index = 0
+        if sheet_index >= len(sheets):
+            # create additional sheets until we have enough
+            for i in range(len(sheets), sheet_index + 1):
+                title = f"Sheet{i+1}"
+                print(f"[DEBUG] Creating worksheet: {title}")
+                sh.add_worksheet(title=title, rows=1000, cols=20)
+            sheets = sh.worksheets()
+        ws = sh.get_worksheet(sheet_index)
+        print(f"[DEBUG] Spreadsheet opened successfully. Using worksheet index {sheet_index} (title='{ws.title}')")
     except Exception as e:
         print(f"[ERROR] Failed to open spreadsheet: {e}")
         print("[TIP] Make sure the sheet is shared with the service account email")
@@ -116,10 +127,11 @@ def upload_to_existing_sheet(csv_path, sheet_url, service_json):
         with open(csv_path, newline="") as f:
             rows = list(csv.reader(f))
             print(f"[DEBUG] Read {len(rows)} rows from CSV")
-            
+
+        # clear and upload to default worksheet unless caller specifies otherwise
         print("[DEBUG] Clearing sheet...")
         ws.clear()
-        
+
         print("[DEBUG] Uploading data...")
         ws.update(rows)
         print(f"[OK] Successfully uploaded {len(rows)} rows to {sheet_url}")
@@ -129,11 +141,6 @@ def upload_to_existing_sheet(csv_path, sheet_url, service_json):
 
 # ---------------- Prediction ----------------
 class ZonePredictor:
-    """
-    Loads a joblib bundle with:
-      - model: fitted classifier
-      - feature_order: e.g. ["frequency","RT60","RT60_deviation"]
-    """
     def __init__(self, model_path: str, default_frequency: float = 1000.0):
         self.enabled = False
         self.default_frequency = float(default_frequency)
@@ -185,6 +192,8 @@ def main():
     parser.add_argument("--angle-speed", type=int, choices=[1,5], default=5)
     parser.add_argument("--count", type=int, default=None)
     parser.add_argument("--interval", type=float, default=None)
+    parser.add_argument("--sheet-index", type=int, default=0,
+                        help="Target worksheet index (0 = first sheet).")
     parser.add_argument("--simulate", action="store_true")
     parser.add_argument("--no-upload", action="store_true")
 
@@ -224,16 +233,8 @@ def main():
     rows_needed = args.count if (args.count and args.count > 0) else max_rows
     rows_needed = min(rows_needed, max_rows)
 
-    # Initialize serial flag
-    using_serial = not args.simulate
-
-    # Set interval to match Arduino's timing with a small buffer for synchronization
-    interval = args.interval if (args.interval and args.interval > 0) else 3.5  # Match Arduino's 3500ms interval
-
-    # Add initial synchronization delay for serial connection
-    if using_serial:
-        print("[INFO] Initial synchronization delay...")
-        time.sleep(1.0)
+    # interval default = step/speed
+    interval = args.interval if (args.interval and args.interval > 0) else (args.angle_step / args.angle_speed)
 
     # predictor
     predictor = ZonePredictor(args.model_path, default_frequency=args.freq)
@@ -316,46 +317,27 @@ def main():
             try:
                 if using_serial:
                     # Read with timeout and handle potential errors
-                    max_retries = 3  # Number of retries for reading valid data
-                    for retry in range(max_retries):
-                        try:
-                            raw_data = ser.readline()
-                            if not raw_data:
-                                print("(timeout waiting for data...)")
-                                continue
-                                
-                            # Try to decode the data safely
-                            try:
-                                line = raw_data.decode(errors='ignore').strip()
-                                if not line:
-                                    print("(empty line received)")
-                                    continue
-                                    
-                                # Skip any header-like lines
-                                if "Sensor" in line or "Ultrasonic" in line or "RT60" in line:
-                                    print("(skipping header line)")
-                                    continue
-                                    
-                                # Validate data format before proceeding
-                                parts = [p.strip() for p in line.split(",")]
-                                if len(parts) == 3 and all(_is_number(p) for p in parts):
-                                    # Force the sensor number to match our sequence
-                                    parts[0] = str(current_sensor)
-                                    line = ",".join(parts)
-                                    break  # Valid data found, exit retry loop
-                                    
-                            except UnicodeDecodeError as e:
-                                print(f"Decode error: {e}")
-                                print(f"Raw data: {raw_data}")
-                                continue
-                                
-                        except serial.SerialException as e:
-                            print(f"Serial error: {e}")
-                            if retry == max_retries - 1:  # Last retry
-                                print("Switching to simulate mode...")
-                                using_serial = False
-                                line = f"{current_sensor},{generate_simulated_reading()}"
+                    try:
+                        raw_data = ser.readline()
+                        if not raw_data:
+                            print("(timeout waiting for data...)")
                             continue
+                            
+                        # Try to decode the data safely
+                        try:
+                            line = raw_data.decode(errors='ignore').strip()
+                            if not line:
+                                print("(empty line received)")
+                                continue
+                        except UnicodeDecodeError as e:
+                            print(f"Decode error: {e}")
+                            print(f"Raw data: {raw_data}")
+                            continue
+                    except serial.SerialException as e:
+                        print(f"Serial error: {e}")
+                        print("Switching to simulate mode...")
+                        using_serial = False
+                        line = f"{current_sensor},{generate_simulated_reading()}"
                 else:
                     ultrasonic = round(random.uniform(2.0, 400.0), 2)
                     rt60 = round(random.uniform(0.10, 3.00), 3)
@@ -365,31 +347,23 @@ def main():
                 print(f"Sensor {current_sensor} at {angle_id}°: {line} (len={len(line)})")
 
                 # Parse the data
-                try:
-                    parts = [p.strip() for p in line.split(",")]
-                    if len(parts) == 3 and _is_number(parts[0]) and _is_number(parts[1]) and _is_number(parts[2]):
-                        sensor = int(parts[0])     # sensor number (1 or 2)
-                        utv = float(parts[1])      # ultrasonic cm
-                        rt60 = float(parts[2])     # seconds
-
-                        # Get prediction if enabled
-                        label = predictor.predict(rt60=rt60, frequency=args.freq) if do_predict else ""
-
-                        # Write row in correct order: sensor, angle, rt60, utv, class
-                        row = [str(sensor), str(angle_id), f"{rt60}", f"{utv}", label]
-                        w.writerow(row)
-                        f.flush()
-                        written += 1
-                    else:
-                        print(f"Invalid data format. Expected 3 numbers, got: {parts}")
-                        continue
-                except ValueError as e:
-                    print(f"Number parsing error: {e}")
+                parts = [p.strip() for p in line.split(",")]
+                if len(parts) == 3 and _is_number(parts[0]) and _is_number(parts[1]) and _is_number(parts[2]):
+                    sensor = int(parts[0])     # sensor number (1 or 2)
+                    utv = float(parts[1])      # ultrasonic cm
+                    rt60 = float(parts[2])     # seconds
+                    
+                    # Get prediction
+                    label = predictor.predict(rt60=rt60, frequency=args.freq) if do_predict else ""
+                    
+                    # Write row to CSV
+                    row = [str(sensor), str(angle_id), f"{rt60}", f"{utv}", label]
+                    w.writerow(row)
+                    f.flush()
+                    written += 1
+                else:
+                    print(f"Invalid data format. Expected 3 numbers, got: {parts}")
                     continue
-            except Exception as e:
-                print(f"Unexpected error: {e}")
-                continue
-
             except Exception as e:
                 print(f"Unexpected error: {e}")
                 continue
@@ -410,7 +384,7 @@ def main():
         return
 
     try:
-        upload_to_existing_sheet(csv_path, args.sheet_link, sa_path)
+        upload_to_existing_sheet(csv_path, args.sheet_link, sa_path, args.sheet_index)
     except Exception as e:
         print("[ERROR] Google Sheets upload failed:", e)
         print("[TIP] Share your Sheet with the service account email (Editor).")

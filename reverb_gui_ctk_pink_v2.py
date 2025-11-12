@@ -46,7 +46,7 @@ except Exception:
 
 
 # Path to backend script (same folder)
-SCRIPT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "datagatherer_po2_g.py")
+SCRIPT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "datagatherer_po2_g_fixed.py")
 
 # Angle constants
 MAX_ANGLE = 355
@@ -343,12 +343,19 @@ class App(ctk.CTk):
         ctk.CTkEntry(adv, textvariable=self.model_var, width=640,
                      fg_color="#181820", border_color=PINK, corner_radius=8).grid(row=3, column=1, sticky="we", padx=8, pady=4)
 
+        # Layer selector (Sheet 1..Sheet 4)
+        ctk.CTkLabel(adv, text="Layer (Sheet)", text_color=TEXT_DIM, font=("Segoe UI", 12)).grid(row=4, column=0, sticky="w", padx=10, pady=4)
+        self.layer_var = ctk.StringVar(value="1")
+        # Support up to 4 layers (Sheet1..Sheet4)
+        self.layer_menu = ctk.CTkOptionMenu(adv, values=["1", "2", "3", "4"], variable=self.layer_var, width=120)
+        self.layer_menu.grid(row=4, column=1, sticky="w", padx=8, pady=4)
+
         # Info note
         ctk.CTkLabel(
             adv,
             text="Deploy uses your .joblib model if available; otherwise RT60 rule (Dead <0.2 • Neutral 0.2–0.4 • Hot >0.4).",
             text_color=TEXT_DIM, font=("Segoe UI", 11)
-        ).grid(row=4, column=0, columnspan=2, sticky="w", padx=10, pady=(2, 10))
+        ).grid(row=5, column=0, columnspan=2, sticky="w", padx=10, pady=(2, 10))
 
         adv.grid_columnconfigure(1, weight=1)
 
@@ -373,6 +380,18 @@ class App(ctk.CTk):
             fg_color=PINK, hover_color=PINK_HOVER, corner_radius=10, width=220
         )
         self.deploy_btn.pack(side="left", padx=8, pady=8)
+
+        # Compact layer selector beside Deploy for quick access
+        try:
+            # ensure layer_var exists (created in Advanced panel)
+            if not hasattr(self, 'layer_var'):
+                self.layer_var = ctk.StringVar(value="1")
+        except Exception:
+            self.layer_var = ctk.StringVar(value="1")
+
+        ctk.CTkLabel(controls, text="Layer:", text_color=TEXT_DIM).pack(side="left", padx=(6,2))
+        self.layer_short_menu = ctk.CTkOptionMenu(controls, values=["1","2","3","4"], variable=self.layer_var, width=80)
+        self.layer_short_menu.pack(side="left", padx=(0,8))
 
         self.progress = ctk.CTkProgressBar(
             controls, width=300, progress_color=PINK, fg_color="#1b1b23"
@@ -455,6 +474,13 @@ class App(ctk.CTk):
         if self.skip_var.get():
             cmd.append("--skip-gsheets")
 
+        # Pass sheet index (0-based) to backend so it uploads to the selected layer
+        try:
+            sheet_index = max(0, int(self.layer_var.get()) - 1)
+        except Exception:
+            sheet_index = 0
+        cmd.extend(["--sheet-index", str(sheet_index)])
+
         self._write(f"▶ Running: {' '.join(cmd)}")
 
         self.stop_requested = False
@@ -532,7 +558,24 @@ class App(ctk.CTk):
                 sheet_id = m.group(1)
 
                 sh = client.open_by_key(sheet_id)
-                ws = sh.sheet1
+                # Select worksheet based on Layer selector (default: first sheet)
+                try:
+                    sheet_index = max(0, int(self.layer_var.get()) - 1) if hasattr(self, 'layer_var') else 0
+                except Exception:
+                    sheet_index = 0
+
+                # Ensure the spreadsheet has enough worksheets; create missing ones up to the requested index
+                sheets = sh.worksheets()
+                if sheet_index < 0:
+                    sheet_index = 0
+                if sheet_index >= len(sheets):
+                    for i in range(len(sheets), sheet_index + 1):
+                        title = f"Sheet{i+1}"
+                        sh.add_worksheet(title=title, rows=1000, cols=20)
+                    sheets = sh.worksheets()
+
+                ws = sh.get_worksheet(sheet_index)
+                self._write(f"→ Using worksheet index {sheet_index} (title='{ws.title}')")
 
                 self._write("→ Downloading sheet...")
                 rows = ws.get_all_records()  # list of dicts
